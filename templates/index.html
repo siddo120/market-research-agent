@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Market Research Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1>Market Research Agent</h1>
+    <p class="sub">
+      Type a company for a strategy brief: <b>1</b>&nbsp;sector TAM &amp; macro ·
+      <b>2</b>&nbsp;position &amp; deep-dive · <b>3</b>&nbsp;forward thesis ·
+      <b>4</b>&nbsp;risks · <b>5</b>&nbsp;competitor whitespace &amp; recommendations.
+      Every number is cited to a high-credibility source; it never guesses beyond
+      what it can cite.
+    </p>
+
+    {% if missing_keys %}
+      <div class="banner warn">
+        Missing API keys: <b>{{ missing_keys|join(", ") }}</b>. Copy
+        <code>.env.example</code> to <code>.env</code> and fill them in.
+      </div>
+    {% endif %}
+
+    <form id="f" autocomplete="off">
+      <input type="text" id="company" name="company"
+             placeholder="e.g. Reliance Industries" autofocus />
+      <button type="submit" id="go">Research</button>
+    </form>
+
+    <div class="history" id="history" hidden>
+      <span class="history-label">Recent:</span>
+      <span id="history-chips"></span>
+      <button type="button" class="history-clear" id="history-clear">clear</button>
+    </div>
+
+    <!-- Live progress panel (shown while running) -->
+    <div class="status" id="status" hidden>
+      <div class="spinner"></div>
+      <div>
+        <p class="status-msg" id="status-msg">Starting…</p>
+        <p class="status-sub"><span id="status-company"></span> · <span id="timer">0s</span></p>
+      </div>
+      <button type="button" class="status-cancel" id="cancel">cancel</button>
+    </div>
+
+    <div class="banner err" id="error" hidden></div>
+
+    <!-- Report gets injected here -->
+    <div id="results"></div>
+  </main>
+
+  <!-- Full-screen slide deck viewer -->
+  <div class="deck-overlay" id="deck" hidden>
+    <div class="deck-top">
+      <span class="deck-title" id="deck-title"></span>
+      <span class="deck-counter" id="deck-counter"></span>
+      <button class="deck-close" id="deck-close">✕ Close (Esc)</button>
+    </div>
+    <div class="deck-stage" id="deck-stage"></div>
+    <div class="deck-nav">
+      <button id="deck-prev">← Prev</button>
+      <button id="deck-next">Next →</button>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById("f");
+    const input = document.getElementById("company");
+    const goBtn = document.getElementById("go");
+    const statusEl = document.getElementById("status");
+    const statusMsg = document.getElementById("status-msg");
+    const statusCompany = document.getElementById("status-company");
+    const timerEl = document.getElementById("timer");
+    const errorEl = document.getElementById("error");
+    const results = document.getElementById("results");
+    const cancelBtn = document.getElementById("cancel");
+
+    let es = null;          // active EventSource
+    let timerId = null;     // elapsed-time interval
+
+    const HKEY = "mra_history";
+    function loadHistory() {
+      try { return JSON.parse(localStorage.getItem(HKEY)) || []; }
+      catch { return []; }
+    }
+    function saveHistory(list) {
+      try { localStorage.setItem(HKEY, JSON.stringify(list.slice(0, 8))); } catch {}
+    }
+    function pushHistory(name) {
+      const list = loadHistory().filter(n => n.toLowerCase() !== name.toLowerCase());
+      list.unshift(name);
+      saveHistory(list);
+      renderHistory();
+    }
+    function renderHistory() {
+      const list = loadHistory();
+      const wrap = document.getElementById("history");
+      const chips = document.getElementById("history-chips");
+      chips.innerHTML = "";
+      if (!list.length) { wrap.hidden = true; return; }
+      wrap.hidden = false;
+      list.forEach(name => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "chip";
+        b.textContent = name;
+        b.addEventListener("click", () => { input.value = name; run(name); });
+        chips.appendChild(b);
+      });
+    }
+    document.getElementById("history-clear").addEventListener("click", () => {
+      saveHistory([]); renderHistory();
+    });
+
+    function stopTimer() { if (timerId) { clearInterval(timerId); timerId = null; } }
+    function cleanup() {
+      if (es) { es.close(); es = null; }
+      stopTimer();
+      statusEl.hidden = true;
+      goBtn.disabled = false;
+    }
+
+    function run(company) {
+      company = (company || "").trim();
+      if (!company) { input.focus(); return; }
+      cleanup();
+      errorEl.hidden = true;
+      results.innerHTML = "";
+      goBtn.disabled = true;
+
+      statusCompany.textContent = company;
+      statusMsg.textContent = "Starting…";
+      statusEl.hidden = false;
+      const t0 = Date.now();
+      timerId = setInterval(() => {
+        timerEl.textContent = Math.round((Date.now() - t0) / 1000) + "s";
+      }, 1000);
+
+      es = new EventSource("/research/stream?company=" + encodeURIComponent(company));
+      es.addEventListener("status", e => { statusMsg.textContent = e.data; });
+      es.addEventListener("result", e => {
+        results.innerHTML = e.data;
+        pushHistory(company);
+        cleanup();
+        results.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+      es.addEventListener("error", e => {
+        // Custom server error event carries data; a transport drop does not.
+        errorEl.textContent = e.data || "Connection lost before the report finished.";
+        errorEl.hidden = false;
+        cleanup();
+      });
+    }
+
+    form.addEventListener("submit", ev => { ev.preventDefault(); run(input.value); });
+    cancelBtn.addEventListener("click", cleanup);
+    renderHistory();
+  </script>
+
+  <script>
+    // ---- Slide deck viewer (SVG charts, client-side) ----
+    const PALETTE = ["#6ea8fe", "#2f9e6b", "#d9822b", "#b58a2b", "#d9534f", "#9b7ede"];
+    const deckEl = document.getElementById("deck");
+    const stage = document.getElementById("deck-stage");
+    let deck = null, slideIdx = 0;
+
+    const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const fmt = v => (Math.abs(v) >= 1000 ? v.toLocaleString() : String(v));
+
+    function svgLineBar(chart, kind) {
+      const data = chart.data, W = 540, H = 240, pad = 42;
+      const vals = data.map(d => d.value);
+      const max = Math.max(...vals, 0), min = Math.min(...vals, 0);
+      const span = (max - min) || 1;
+      const x = i => pad + i * (W - pad * 2) / Math.max(data.length - 1, 1);
+      const xb = i => pad + i * (W - pad * 2) / data.length;
+      const y = v => H - pad - (v - min) / span * (H - pad * 2);
+      let s = `<svg viewBox="0 0 ${W} ${H}" class="chart-svg">`;
+      s += `<line x1="${pad}" y1="${H - pad}" x2="${W - pad}" y2="${H - pad}" class="axis"/>`;
+      s += `<text x="${pad - 6}" y="${y(max) + 4}" class="ylab" text-anchor="end">${esc(fmt(max))}</text>`;
+      if (kind === "bar") {
+        const bw = (W - pad * 2) / data.length * 0.6;
+        data.forEach((d, i) => {
+          const bx = xb(i) + ((W - pad * 2) / data.length - bw) / 2;
+          s += `<rect x="${bx}" y="${y(d.value)}" width="${bw}" height="${H - pad - y(d.value)}" rx="3" fill="${PALETTE[0]}"/>`;
+          s += `<text x="${bx + bw / 2}" y="${y(d.value) - 6}" class="vlab" text-anchor="middle">${esc(fmt(d.value))}</text>`;
+          s += `<text x="${bx + bw / 2}" y="${H - pad + 16}" class="xlab" text-anchor="middle">${esc(d.label)}</text>`;
+        });
+      } else {
+        const pts = data.map((d, i) => `${x(i)},${y(d.value)}`).join(" ");
+        s += `<polyline points="${pts}" fill="none" stroke="${PALETTE[0]}" stroke-width="2.5"/>`;
+        data.forEach((d, i) => {
+          s += `<circle cx="${x(i)}" cy="${y(d.value)}" r="4" fill="${PALETTE[0]}"/>`;
+          s += `<text x="${x(i)}" y="${y(d.value) - 10}" class="vlab" text-anchor="middle">${esc(fmt(d.value))}</text>`;
+          s += `<text x="${x(i)}" y="${H - pad + 16}" class="xlab" text-anchor="middle">${esc(d.label)}</text>`;
+        });
+      }
+      return s + "</svg>";
+    }
+
+    function svgPie(chart) {
+      const data = chart.data, total = data.reduce((a, d) => a + d.value, 0) || 1;
+      const cx = 90, cy = 90, r = 78, ir = 44;
+      let ang = -Math.PI / 2, s = `<svg viewBox="0 0 340 190" class="chart-svg">`;
+      const pt = (a, rad) => [cx + rad * Math.cos(a), cy + rad * Math.sin(a)];
+      data.forEach((d, i) => {
+        const frac = d.value / total, a2 = ang + frac * 2 * Math.PI;
+        const large = frac > 0.5 ? 1 : 0;
+        const [x1, y1] = pt(ang, r), [x2, y2] = pt(a2, r);
+        const [x3, y3] = pt(a2, ir), [x4, y4] = pt(ang, ir);
+        s += `<path d="M${x1} ${y1} A${r} ${r} 0 ${large} 1 ${x2} ${y2} L${x3} ${y3} A${ir} ${ir} 0 ${large} 0 ${x4} ${y4} Z" fill="${PALETTE[i % PALETTE.length]}"/>`;
+        ang = a2;
+      });
+      data.forEach((d, i) => {
+        s += `<rect x="192" y="${20 + i * 22}" width="12" height="12" rx="2" fill="${PALETTE[i % PALETTE.length]}"/>`;
+        s += `<text x="210" y="${30 + i * 22}" class="legend">${esc(d.label)} — ${Math.round(d.value / total * 100)}%</text>`;
+      });
+      return s + "</svg>";
+    }
+
+    function renderChart(c) {
+      const src = c.source_url
+        ? `<a class="chart-src" href="${esc(c.source_url)}" target="_blank" rel="noopener">${esc(c.source || "source")} ↗</a>` : "";
+      let body;
+      if (c.type === "metric") {
+        body = `<div class="metric"><div class="metric-val">${esc(c.value)}${c.unit ? " " + esc(c.unit) : ""}</div><div class="metric-lab">${esc(c.title)}</div></div>`;
+      } else if (c.type === "pie") {
+        body = svgPie(c);
+      } else {
+        body = svgLineBar(c, c.type === "bar" ? "bar" : "line");
+      }
+      const head = c.type !== "metric"
+        ? `<div class="chart-title">${esc(c.title)}${c.unit ? ` <span class="chart-unit">(${esc(c.unit)})</span>` : ""}</div>` : "";
+      return `<figure class="chart">${head}${body}${src}</figure>`;
+    }
+
+    function renderSlide(i) {
+      const sl = deck.slides[i];
+      document.getElementById("deck-counter").textContent = `${i + 1} / ${deck.slides.length}`;
+      const bullets = (sl.bullets || []).map(b => `<li>${esc(b)}</li>`).join("");
+      const charts = (sl.charts || []).map(renderChart).join("");
+      stage.innerHTML =
+        `<div class="slide">
+           <div class="slide-step">${esc(sl.step)}</div>
+           <h2 class="slide-headline">${esc(sl.headline)}</h2>
+           ${bullets ? `<ul class="slide-bullets">${bullets}</ul>` : ""}
+           ${charts ? `<div class="slide-charts">${charts}</div>` : ""}
+         </div>`;
+      document.getElementById("deck-prev").disabled = i === 0;
+      document.getElementById("deck-next").disabled = i === deck.slides.length - 1;
+    }
+
+    function openDeck() {
+      const node = document.getElementById("deck-data");
+      if (!node) return;
+      try { deck = JSON.parse(node.textContent); } catch { return; }
+      if (!deck.slides || !deck.slides.length) return;
+      document.getElementById("deck-title").textContent = deck.title + (deck.subtitle ? " — " + deck.subtitle : "");
+      slideIdx = 0; renderSlide(0);
+      deckEl.hidden = false;
+    }
+    const nav = d => { slideIdx = Math.max(0, Math.min(deck.slides.length - 1, slideIdx + d)); renderSlide(slideIdx); };
+    const closeDeck = () => { deckEl.hidden = true; };
+
+    document.addEventListener("click", e => {
+      if (e.target.closest("[data-deck]")) openDeck();
+    });
+    document.getElementById("deck-close").addEventListener("click", closeDeck);
+    document.getElementById("deck-prev").addEventListener("click", () => nav(-1));
+    document.getElementById("deck-next").addEventListener("click", () => nav(1));
+    document.addEventListener("keydown", e => {
+      if (deckEl.hidden) return;
+      if (e.key === "Escape") closeDeck();
+      else if (e.key === "ArrowRight") nav(1);
+      else if (e.key === "ArrowLeft") nav(-1);
+    });
+  </script>
+</body>
+</html>

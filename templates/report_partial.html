@@ -1,0 +1,105 @@
+{# The 6-step strategy brief (Steps 1-5 here; Step 6 deck added separately).
+   Uses `report` only — renders standalone for the SSE injection. #}
+{% macro points(items) %}
+  {% for p in items %}
+    <div class="signal">
+      {% if p.label %}<span class="cat">{{ p.label }}</span>{% endif %}
+      <p class="fact">{% if p.value %}{{ p.value }}{% endif %}</p>
+      {% if p.insight %}<p class="insight">{{ p.insight }}</p>{% endif %}
+      <p class="cite">{{ p.source }}{% if p.as_of %} · {{ p.as_of }}{% endif %} ·
+        <a href="{{ p.source_url }}" target="_blank" rel="noopener">source ↗</a></p>
+    </div>
+  {% endfor %}
+{% endmacro %}
+
+<div class="report">
+  <div class="report-head">
+    <h1 class="report-title">{{ report.company }}</h1>
+    {% if report.meta.sector %}<span class="sector">{{ report.meta.sector }}</span>{% endif %}
+    {% if report.deck and report.deck.slides %}
+      <button class="deck-btn" data-deck>▶ View as slide deck ({{ report.deck.slides|length }})</button>
+      <script type="application/json" id="deck-data">{{ report.deck|tojson }}</script>
+    {% endif %}
+  </div>
+  {% if report.meta.overview %}<p class="overview">{{ report.meta.overview }}</p>{% endif %}
+  <p class="meta">Generated in {{ report.elapsed_seconds }}s ·
+    {{ report.sources.company.count }} company · {{ report.sources.sector.count }} sector ·
+    {{ report.sources.competitor.count }} competitor sources.
+    {% if report.meta.competitors %}Competitors: {{ report.meta.competitors|join(", ") }}.{% endif %}</p>
+
+  {% set m = report.steps.market %}
+  <section class="step">
+    <h2><span class="stepno">1</span> Market &amp; Macro</h2>
+    {% if m.headline %}<p class="headline">{{ m.headline }}</p>{% endif %}
+    {% if m.narrative %}<p class="narrative">{{ m.narrative }}</p>{% endif %}
+    {{ points(m.data_points) }}
+    {% if not m.data_points and m.note %}<div class="banner none">{{ m.note }}</div>{% endif %}
+  </section>
+
+  {% set p = report.steps.position %}
+  <section class="step">
+    <h2><span class="stepno">2</span> Position &amp; Deep-dive
+      <span class="tag retrieved">cited</span></h2>
+    {% if p.headline %}<p class="headline">{{ p.headline }}</p>{% endif %}
+    {% if p.narrative %}<p class="narrative">{{ p.narrative }}</p>{% endif %}
+    {{ points(p.data_points) }}
+  </section>
+
+  {% set t = report.steps.thesis %}
+  <section class="step">
+    <h2><span class="stepno">3</span> Forward Thesis <span class="tag thesis">where they're headed</span></h2>
+    {% if t.headline %}<p class="headline">{{ t.headline }}</p>{% endif %}
+    {% if t.narrative %}<p class="narrative">{{ t.narrative }}</p>{% endif %}
+    {{ points(t.data_points) }}
+  </section>
+
+  {% set r = report.steps.risks %}
+  <section class="step">
+    <h2><span class="stepno">4</span> Risks &amp; Red Flags</h2>
+    {% if r.headline %}<p class="headline">{{ r.headline }}</p>{% endif %}
+    {% if r.flags %}
+      {% for it in r.flags %}
+        <div class="risk sev-{{ it.severity or 'medium' }}">
+          <span class="sev">{{ it.severity or 'medium' }}</span>
+          <p class="fact">{{ it.risk }}</p>
+          <p class="insight">{{ it.why }}</p>
+          <p class="cite">{{ it.source }}{% if it.as_of %} · {{ it.as_of }}{% endif %} ·
+            <a href="{{ it.source_url }}" target="_blank" rel="noopener">source ↗</a></p>
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="banner none">No credibly-sourced risk signals found.
+        {% if r.note %}<br>{{ r.note }}{% endif %}</div>
+    {% endif %}
+  </section>
+
+  {% set a = report.steps.actions %}
+  <section class="step">
+    <h2><span class="stepno">5</span> Whitespace &amp; Recommendations</h2>
+    {% if a.headline %}<p class="headline">{{ a.headline }}</p>{% endif %}
+    {% if a.narrative %}<p class="narrative">{{ a.narrative }}</p>{% endif %}
+    {% if a.recommendations %}
+      <div class="recs">
+        {% for rec in a.recommendations %}
+          <div class="rec">
+            <p class="rec-move">→ {{ rec.move }}</p>
+            {% if rec.target_vertical %}<p class="rec-target">Target: {{ rec.target_vertical }}</p>{% endif %}
+            {% if rec.rationale %}<p class="insight">{{ rec.rationale }}</p>{% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+    {% if a.competitor_moves %}
+      <h3 class="sub">What competitors are doing</h3>
+      {% for cm in a.competitor_moves %}
+        <div class="signal">
+          <span class="cat">{{ cm.competitor }}</span>
+          <p class="fact">{{ cm.move }}</p>
+          {% if cm.implication %}<p class="insight">{{ cm.implication }}</p>{% endif %}
+          <p class="cite">{{ cm.source }}{% if cm.as_of %} · {{ cm.as_of }}{% endif %} ·
+            <a href="{{ cm.source_url }}" target="_blank" rel="noopener">source ↗</a></p>
+        </div>
+      {% endfor %}
+    {% endif %}
+  </section>
+</div>
